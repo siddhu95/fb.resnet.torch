@@ -30,7 +30,7 @@ local checkpoint, optimState = checkpoints.latest(opt)
 local model, criterion = models.setup(opt, checkpoint)
 
 -- Data loading
-local trainLoader, valLoader = DataLoader.create(opt)
+local trainLoader, valLoader = DataLoader.create(opt,false)
 
 -- The trainer handles the training loop and evaluation on validation set
 local trainer = Trainer(model, criterion, opt, optimState)
