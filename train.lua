@@ -81,9 +81,10 @@ function Trainer:train(epoch, dataloader)
    return top1Sum / N, top5Sum / N, lossSum / N
 end
 
-function Trainer:test(epoch, dataloader)
+function Trainer:test(epoch, dataloader, return_prob )
    -- Computes the top-1 and top-5 err on the validation set
-
+   return_prob = return_prob or false
+   
    local timer = torch.Timer()
    local dataTimer = torch.Timer()
    local size = dataloader:size()
@@ -91,7 +92,7 @@ function Trainer:test(epoch, dataloader)
    local nCrops = self.opt.tenCrop and 10 or 1
    local top1Sum, top5Sum = 0.0, 0.0
    local N = 0
-
+   local probs = {}
    self.model:evaluate()
    for n, sample in dataloader:run() do
       local dataTime = dataTimer:time().real
@@ -101,24 +102,37 @@ function Trainer:test(epoch, dataloader)
 
       local output = self.model:forward(self.input):float()
       local loss = self.criterion:forward(self.model.output, self.target)
+      if not return_prob then
+         local top1, top5 = self:computeScore(output, sample.target, nCrops)
+         top1Sum = top1Sum + top1
+         top5Sum = top5Sum + top5
+         N = N + 1
 
-      local top1, top5 = self:computeScore(output, sample.target, nCrops)
-      top1Sum = top1Sum + top1
-      top5Sum = top5Sum + top5
-      N = N + 1
+         print((' | Test: [%d][%d/%d]    Time %.3f  Data %.3f  top1 %7.3f (%7.3f)  top5 %7.3f (%7.3f)'):format(
+            epoch, n, size, timer:time().real, dataTime, top1, top1Sum / N, top5, top5Sum / N))
 
-      print((' | Test: [%d][%d/%d]    Time %.3f  Data %.3f  top1 %7.3f (%7.3f)  top5 %7.3f (%7.3f)'):format(
-         epoch, n, size, timer:time().real, dataTime, top1, top1Sum / N, top5, top5Sum / N))
+         timer:reset()
+         dataTimer:reset()
+      else
+         probs[n] = self:computeProbs(output, sample.target, nCrops)
+         N = N + 1
+         print((' | Test: [%d][%d/%d]    Time %.3f  Data %.3f'):format(
+            epoch, n, size, timer:time().real, dataTime))
 
-      timer:reset()
-      dataTimer:reset()
+         timer:reset()
+         dataTimer:reset()
+      end
    end
    self.model:training()
+   if not return_prob then
+      print((' * Finished epoch # %d     top1: %7.3f  top5: %7.3f\n'):format(
+         epoch, top1Sum / N, top5Sum / N))
 
-   print((' * Finished epoch # %d     top1: %7.3f  top5: %7.3f\n'):format(
-      epoch, top1Sum / N, top5Sum / N))
-
-   return top1Sum / N, top5Sum / N
+      return top1Sum / N, top5Sum / N
+   else
+      print('Prediction over!')
+      return probs
+   end
 end
 
 function Trainer:computeScore(output, target, nCrops)
@@ -147,7 +161,32 @@ function Trainer:computeScore(output, target, nCrops)
 
    return top1 * 100, top5 * 100
 end
+function Trainer:computeScore2(output, target, nCrops)
+   if nCrops > 1 then
+      -- Sum over crops
+      output = output:view(output:size(1) / nCrops, nCrops, output:size(2))
+         --:exp()
+         :sum(2):squeeze(2)
+   end
 
+   -- Coputes the top1 and top5 error rate
+   local batchSize = output:size(1)
+
+   local _ , predictions = output:float():sort(2, true) -- descending
+
+   -- Find which predictions match the target
+   local correct = predictions:eq(
+      target:long():view(batchSize, 1):expandAs(output))
+
+   -- Top-1 score
+   local top1 = 1.0 - (correct:narrow(2, 1, 1):sum() / batchSize)
+
+   -- Top-5 score, if there are at least 5 classes
+   local len = math.min(5, correct:size(2))
+   local top5 = 1.0 - (correct:narrow(2, 1, len):sum() / batchSize)
+
+   return top1 * 100, top5 * 100
+end
 function Trainer:copyInputs(sample)
    -- Copies the input to a CUDA tensor, if using 1 GPU, or to pinned memory,
    -- if using DataParallelTable. The target is always copied to a CUDA tensor
